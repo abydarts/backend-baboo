@@ -1,0 +1,26 @@
+# Global files
+contents/img/avatar/*
+contents/img/identity/*
+contents/img/warung/*
+contents/img/struck/*
+.env.development
+.env.qa
+.env.main
+*.zip
+*.key
+*.key.pub
+.svn
+.htaccess
+.DS_Store
+thumbs.db
+
+# Codeigniter files
+*/user_guide
+*/tools/includes/logs/log-*.php
+*/tools/includes/cache/*
+*/tools/includes/cache/!index.html
+*/wsdls/*
+vendor
+*mailing/
+
+.history

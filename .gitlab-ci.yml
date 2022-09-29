@@ -1,0 +1,89 @@
+stages:
+  - test
+  - build
+  - deploy
+
+.api:build: &api_build
+  stage: build
+  image: docker:stable
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache python3 py3-pip && pip3 install --upgrade pip && pip3 install --no-cache-dir awscli && rm -rf /var/cache/apk/*
+    - apk add jq
+  script:
+    - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity | jq -r '.Account')
+    - chmod +x ci-scripts/*
+    - ci-scripts/load_file_from_ssm.sh $SSM_FILES_PATH
+    - ci-scripts/load_config_to_file.sh $SSM_CONFIG_PATH $ENV_FILE_PATH
+    - docker build . --build-arg commit_branch=$CI_COMMIT_BRANCH -t $IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+    - docker tag $IMAGE_NAME:$CI_COMMIT_SHORT_SHA $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+    - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+
+.api:deploy: &api_deploy
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  script:
+    - export TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$TASK_DEFINITION_NAME")
+    - export NEW_CONTAINER_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$DOCKER_REGISTRY/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA" '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions')
+    - echo "Registering new container definition..."
+    - |
+      aws ecs register-task-definition \
+      --family "${TASK_DEFINITION_NAME}" \
+      --container-definitions "${NEW_CONTAINER_DEFINITION}" \
+      --cpu ${CPU} \
+      --memory ${MEMORY} \
+      --execution-role-arn "${EXECUTION_ROLE_ARN}" \
+      --task-role-arn "${TASK_ROLE_ARN}" \
+      --network-mode "awsvpc" \
+      --requires-compatibilities "FARGATE"
+    - echo "Updating the service..."
+    - |
+      aws ecs update-service \
+      --cluster "${CLUSTER_NAME}" \
+      --service "${SERVICE_NAME}" \
+      --task-definition "${TASK_DEFINITION_NAME}" \
+      --desired-count "${TASKS_COUNT}"
+
+build:dev:
+  <<: *api_build
+  environment:
+    name: development
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+
+deploy:dev:
+  <<: *api_deploy
+  environment:
+    name: development
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+
+build:qa:
+  <<: *api_build
+  environment:
+    name: qa
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "qa"'
+
+deploy:qa:
+  <<: *api_deploy
+  environment:
+    name: qa
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "qa"'
+
+build:prod:
+  <<: *api_build
+  environment:
+    name: prod
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy:prod:
+  <<: *api_deploy
+  environment:
+    name: prod
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
